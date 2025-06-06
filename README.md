@@ -11,7 +11,7 @@ Nexus Network 是一个去中心化的零知识证明网络，通过贡献计算
 ### 一键安装命令
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/essenwo/nexus-linux/main/install_nexus.sh | bash
+curl -fsSL https://raw.githubusercontent.com/essenwo/nexus-linux/main/nexus_final.sh | bash
 ```
 
 ## 🖥️ 系统要求
