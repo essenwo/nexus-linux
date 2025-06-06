@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =======================================================
-# Nexus Network CLI 一键安装脚本 (最终版)
+# Nexus Network CLI 一键安装脚本 (修复版)
 # 适用于 Ubuntu/Debian Linux 系统
 # 作者: essenwo
 # GitHub: https://github.com/essenwo/nexus-linux
@@ -213,14 +213,11 @@ start_screen_session() {
     echo "  5. 使用 'screen -r nexus-prover' 重新连接"
     echo ""
     
-    read -p "按 Enter 键启动 screen 会话..."
-    
     # 终止可能存在的旧会话
     screen -S nexus-prover -X quit 2>/dev/null || true
     sleep 1
     
     print_success "正在启动 screen 会话..."
-    echo ""
     print_warning "现在进入 screen 会话，请按照提示操作"
     echo ""
     
