@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =======================================================
-# Nexus Network CLI 一键安装脚本 (简化版)
+# Nexus Network CLI 一键安装脚本 (最终版)
 # 适用于 Ubuntu/Debian Linux 系统
 # 作者: essenwo
 # GitHub: https://github.com/essenwo/nexus-linux
@@ -134,7 +134,6 @@ install_rust() {
     
     # 确保 Rust 在 PATH 中
     export PATH="$HOME/.cargo/bin:$PATH"
-    echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.bashrc
     
     # 添加 RISC-V 目标
     rustup target add riscv32i-unknown-none-elf
@@ -158,37 +157,45 @@ install_nexus_cli() {
     
     # 更新环境变量
     source ~/.bashrc 2>/dev/null || true
-    export PATH="$HOME/.local/bin:$PATH"
     
     print_success "Nexus CLI 安装完成"
+}
+
+# 查找 nexus-network 命令
+find_nexus_command() {
+    local nexus_cmd=""
+    
+    # 更新环境变量
+    source ~/.bashrc 2>/dev/null || true
+    export PATH="$HOME/.local/bin:$PATH"
+    
+    # 按优先级检查路径
+    if command -v nexus-network &> /dev/null; then
+        nexus_cmd="nexus-network"
+    elif [[ -x "$HOME/.local/bin/nexus-network" ]]; then
+        nexus_cmd="$HOME/.local/bin/nexus-network"
+    elif [[ -x "/usr/local/bin/nexus-network" ]]; then
+        nexus_cmd="/usr/local/bin/nexus-network"
+    else
+        # 快速搜索（限制时间避免卡住）
+        nexus_cmd=$(timeout 10 find /root /home /opt /usr/local -name "nexus-network" -type f -executable 2>/dev/null | head -1)
+    fi
+    
+    echo "$nexus_cmd"
 }
 
 # 验证安装
 verify_installation() {
     print_info "验证安装..."
     
-    # 查找 nexus-network 命令
-    local nexus_cmd=""
-    
-    if command -v nexus-network &> /dev/null; then
-        nexus_cmd="nexus-network"
-    elif [[ -f "$HOME/.local/bin/nexus-network" ]]; then
-        nexus_cmd="$HOME/.local/bin/nexus-network"
-        export PATH="$HOME/.local/bin:$PATH"
-    else
-        nexus_cmd=$(find /home /opt /usr -name "nexus-network" -type f -executable 2>/dev/null | head -1)
-        if [[ -n "$nexus_cmd" ]]; then
-            local nexus_dir=$(dirname "$nexus_cmd")
-            export PATH="$nexus_dir:$PATH"
-        fi
-    fi
+    local nexus_cmd=$(find_nexus_command)
     
     if [[ -n "$nexus_cmd" ]] && [[ -x "$nexus_cmd" ]]; then
-        print_success "Nexus Network CLI 验证成功"
+        print_success "Nexus Network CLI 验证成功: $nexus_cmd"
         return 0
     else
-        print_error "未找到 Nexus Network CLI"
-        return 1
+        print_warning "未找到 nexus-network，将尝试使用默认路径"
+        return 0  # 继续执行，不退出
     fi
 }
 
@@ -217,14 +224,14 @@ start_screen_session() {
     print_warning "现在进入 screen 会话，请按照提示操作"
     echo ""
     
-    # 确定 nexus-network 命令路径
-    local nexus_cmd="nexus-network"
-    if ! command -v nexus-network &> /dev/null; then
-        if [[ -f "$HOME/.local/bin/nexus-network" ]]; then
-            nexus_cmd="$HOME/.local/bin/nexus-network"
-        else
-            nexus_cmd=$(find /home /opt /usr -name "nexus-network" -type f -executable 2>/dev/null | head -1)
-        fi
+    # 查找 nexus-network 命令
+    local nexus_cmd=$(find_nexus_command)
+    
+    if [[ -z "$nexus_cmd" ]]; then
+        nexus_cmd="nexus-network"  # 使用默认值
+        print_warning "使用默认命令: nexus-network"
+    else
+        print_info "使用命令: $nexus_cmd"
     fi
     
     # 启动 screen 会话并运行 nexus-network
@@ -266,14 +273,9 @@ main() {
     install_dependencies
     install_rust
     install_nexus_cli
-    
-    if verify_installation; then
-        start_screen_session
-        show_completion_info
-    else
-        print_error "安装验证失败"
-        exit 1
-    fi
+    verify_installation
+    start_screen_session
+    show_completion_info
 }
 
 # 运行主函数
