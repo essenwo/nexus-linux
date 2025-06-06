@@ -1,7 +1,6 @@
 #!/bin/bash
 
 # Nexus Network CLI 一键安装脚本 - Ubuntu 22.04版本
-# 对应 Mac 版本的 Linux 安装脚本，包含 screen 会话
 
 set -e
 
@@ -16,22 +15,23 @@ sudo apt update
 echo "🔧 安装系统依赖..."
 sudo apt install -y build-essential cmake protobuf-compiler libprotobuf-dev git curl screen
 
-# 安装 Rust (和 Mac 版本一样)
+# 安装 Rust 
 echo "🦀 安装 Rust..."
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 
 # 刷新环境变量
 source ~/.cargo/env
 
-# 添加 RISC-V 目标 (和 Mac 版本一样)
+# 添加 RISC-V 目标 
 echo "🎯 添加 RISC-V 目标..."
 rustup target add riscv32i-unknown-none-elf
 
-# 安装 Nexus CLI (和 Mac 版本一样)
+# 安装 Nexus CLI 
 echo "⚡ 安装 Nexus Network CLI..."
-curl https://cli.nexus.xyz/ | sh
+echo "y" | curl https://cli.nexus.xyz/ | sh
 
 # 刷新环境变量 (对应 source /Users/macmini/.zshrc)
+echo "🔄 刷新环境变量..."
 echo "🔄 刷新环境变量..."
 source ~/.bashrc
 
