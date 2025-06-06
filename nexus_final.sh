@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =======================================================
-# Nexus Network CLI 一键安装脚本 (修复版)
+# Nexus Network CLI 一键安装脚本
 # 适用于 Ubuntu/Debian Linux 系统
 # 作者: essenwo
 # GitHub: https://github.com/essenwo/nexus-linux
@@ -204,7 +204,7 @@ start_screen_session() {
     echo ""
     print_step "准备启动 Nexus Network"
     echo ""
-    print_info "安装完成！接下来将启动 screen 会话"
+    print_info "安装完成！即将启动 screen 会话"
     print_warning "在 screen 会话中："
     echo "  1. 程序会提示你输入 Node ID"
     echo "  2. 请访问 https://app.nexus.xyz 获取你的 Node ID"
