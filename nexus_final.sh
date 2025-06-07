@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Nexus Network 一键安装脚本
-# 自动安装所有依赖，最后提示输入Node ID并启动
+# Nexus Network Docker 一键安装脚本
+# 解决 GLIBC 兼容性问题，自动安装后提示输入Node ID
 
 set -e
 
@@ -12,7 +12,6 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-# 显示带颜色的消息
 print_step() {
     echo -e "${BLUE}[步骤] $1${NC}"
 }
@@ -32,8 +31,8 @@ print_error() {
 
 echo ""
 echo -e "${GREEN}=================================${NC}"
-echo -e "${GREEN}  Nexus Network 一键安装脚本${NC}"
-echo -e "${GREEN}  适用于 Ubuntu 22.04+ 系统${NC}"  
+echo -e "${GREEN}  Nexus Network Docker 一键安装${NC}"
+echo -e "${GREEN}  解决系统兼容性问题${NC}"  
 echo -e "${GREEN}=================================${NC}"
 echo ""
 
@@ -49,17 +48,38 @@ fi
 
 print_success "系统检查通过"
 
-# 更新系统
-print_step "更新系统包列表..."
-export DEBIAN_FRONTEND=noninteractive
-apt update -y
-print_success "系统更新完成"
+# 安装 Docker
+print_step "检查并安装 Docker..."
+if ! command -v docker &> /dev/null; then
+    print_step "安装 Docker..."
+    apt update
+    apt install -y apt-transport-https ca-certificates curl gnupg lsb-release
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+    apt update
+    apt install -y docker-ce docker-ce-cli containerd.io
+    systemctl enable docker
+    systemctl start docker
+    print_success "Docker 安装完成"
+else
+    print_success "Docker 已安装"
+fi
+
+# 创建临时目录
+TEMP_DIR=$(mktemp -d)
+cd "$TEMP_DIR"
+
+print_step "创建 Nexus Docker 镜像..."
+
+# 创建 Dockerfile
+cat > Dockerfile << 'EOF'
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
 
 # 安装基础依赖
-print_step "安装基础依赖包..."
-apt install -y \
+RUN apt-get update && apt-get install -y \
     curl \
-    wget \
     build-essential \
     cmake \
     pkg-config \
@@ -67,51 +87,78 @@ apt install -y \
     libprotobuf-dev \
     protobuf-compiler \
     git \
-    screen \
-    unzip
-print_success "基础依赖安装完成"
+    && rm -rf /var/lib/apt/lists/*
 
 # 安装 Rust
-print_step "安装 Rust 编程环境..."
-if command -v rustc &> /dev/null; then
-    print_warning "Rust 已安装，跳过"
-else
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-    source ~/.cargo/env
-    print_success "Rust 安装完成"
-fi
-
-# 确保 Rust 环境可用
-export PATH="$HOME/.cargo/bin:$PATH"
-source ~/.cargo/env 2>/dev/null || true
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
 
 # 添加 RISC-V 目标
-print_step "添加 RISC-V 编译目标..."
-rustup target add riscv32i-unknown-none-elf
-print_success "RISC-V 目标添加完成"
+RUN /root/.cargo/bin/rustup target add riscv32i-unknown-none-elf
 
-# 安装 Nexus CLI
-print_step "安装 Nexus Network CLI..."
-echo "y" | curl -fsSL https://cli.nexus.xyz/ | sh
+# 安装 Nexus CLI (自动确认条款)
+RUN echo "y" | curl -fsSL https://cli.nexus.xyz/ | sh
 
-# 添加 Nexus 到 PATH
-if ! grep -q 'export PATH="$PATH:~/.nexus"' ~/.bashrc; then
-    echo 'export PATH="$PATH:~/.nexus"' >> ~/.bashrc
+# 设置PATH
+ENV PATH="/root/.nexus/bin:${PATH}"
+
+# 创建启动脚本
+COPY start.sh /start.sh
+RUN chmod +x /start.sh
+
+CMD ["/start.sh"]
+EOF
+
+# 创建启动脚本
+cat > start.sh << 'EOF'
+#!/bin/bash
+set -e
+
+echo "🚀 Nexus Network 节点启动中..."
+echo "Node ID: $NODE_ID"
+echo "时间: $(date)"
+echo ""
+
+# 检查 Node ID
+if [ -z "$NODE_ID" ]; then
+    echo "❌ 错误: 未设置 NODE_ID 环境变量"
+    exit 1
 fi
 
-# 立即应用 PATH
-export PATH="$PATH:~/.nexus"
-source ~/.bashrc 2>/dev/null || true
-
-print_success "Nexus CLI 安装完成"
-
-# 验证安装
-print_step "验证安装结果..."
-if [ -f ~/.nexus/nexus-network ] || command -v nexus-network &> /dev/null; then
-    print_success "Nexus Network 安装验证成功"
+# 寻找 nexus-network 可执行文件
+NEXUS_BIN=""
+if command -v nexus-network >/dev/null 2>&1; then
+    NEXUS_BIN="nexus-network"
+elif [ -f /root/.nexus/bin/nexus-network ]; then
+    NEXUS_BIN="/root/.nexus/bin/nexus-network"
+elif [ -f /root/.nexus/nexus-network ]; then
+    NEXUS_BIN="/root/.nexus/nexus-network"
 else
-    print_warning "二进制文件可能未在标准路径，但不影响使用"
+    echo "❌ 错误: 找不到 nexus-network 可执行文件"
+    echo "检查的路径:"
+    echo "  command -v nexus-network: $(command -v nexus-network 2>/dev/null || echo '未找到')"
+    echo "  /root/.nexus/bin/nexus-network: $(ls -la /root/.nexus/bin/nexus-network 2>/dev/null || echo '不存在')"
+    echo "  /root/.nexus/nexus-network: $(ls -la /root/.nexus/nexus-network 2>/dev/null || echo '不存在')"
+    exit 1
 fi
+
+echo "✅ 找到 nexus-network: $NEXUS_BIN"
+echo ""
+
+# 启动 Nexus Network
+echo "🎯 启动 Nexus Network 挖矿..."
+exec $NEXUS_BIN start --node-id $NODE_ID
+EOF
+
+# 构建 Docker 镜像
+print_step "构建 Docker 镜像（可能需要几分钟）..."
+docker build -t nexus-network:latest . --no-cache
+
+print_success "Docker 镜像构建完成"
+
+# 清理临时文件
+cd - >/dev/null
+rm -rf "$TEMP_DIR"
 
 echo ""
 echo -e "${GREEN}=================================${NC}"
@@ -119,17 +166,15 @@ echo -e "${GREEN}     🎉 安装完成！🎉${NC}"
 echo -e "${GREEN}=================================${NC}"
 echo ""
 
-# 提示用户输入 Node ID - 修复输入问题
+# 提示用户输入 Node ID
 echo -e "${YELLOW}请访问 https://app.nexus.xyz 获取你的 Node ID${NC}"
 echo ""
 
-# 使用 /dev/tty 确保能正确读取用户输入
+# 输入 Node ID
 while true; do
     if [ -t 0 ]; then
-        # 标准输入是终端
         read -p "请输入你的 Node ID: " NODE_ID
     else
-        # 标准输入不是终端（通过 curl | bash 运行）
         echo -n "请输入你的 Node ID: "
         read NODE_ID < /dev/tty
     fi
@@ -139,7 +184,6 @@ while true; do
         continue
     fi
     
-    # 验证 Node ID 格式（假设是数字）
     if [[ "$NODE_ID" =~ ^[0-9]+$ ]]; then
         break
     else
@@ -149,67 +193,52 @@ while true; do
 done
 
 echo ""
-print_step "准备启动 Nexus Network 节点..."
+print_step "启动 Nexus Docker 容器..."
 
-# 检查是否有旧的 screen 会话
-if screen -list | grep -q "nexus"; then
-    print_warning "检测到旧的 screen 会话，正在清理..."
-    screen -S nexus -X quit 2>/dev/null || true
-    sleep 2
+# 停止旧容器
+if docker ps -a --format '{{.Names}}' | grep -qw "nexus-prover"; then
+    print_warning "检测到旧容器，正在删除..."
+    docker rm -f nexus-prover >/dev/null 2>&1
 fi
 
-print_step "在 screen 会话中启动节点..."
+# 启动新容器
+docker run -d \
+    --name nexus-prover \
+    --restart unless-stopped \
+    -e NODE_ID="$NODE_ID" \
+    nexus-network:latest
 
-# 创建启动脚本
-cat > /tmp/start_nexus.sh << EOF
-#!/bin/bash
-source ~/.bashrc
-export PATH="\$PATH:~/.nexus"
-
-echo "正在启动 Nexus Network..."
-echo "Node ID: $NODE_ID"
-echo ""
-
-# 尝试不同的路径
-if command -v nexus-network &> /dev/null; then
-    nexus-network start --node-id $NODE_ID
-elif [ -f ~/.nexus/nexus-network ]; then
-    ~/.nexus/nexus-network start --node-id $NODE_ID
-else
-    echo "未找到 nexus-network 命令"
-    exit 1
-fi
-EOF
-
-chmod +x /tmp/start_nexus.sh
-
-# 启动 screen 会话
-screen -dmS nexus bash /tmp/start_nexus.sh
-
-# 等待一下让程序启动
+# 等待容器启动
 sleep 3
 
-# 检查 screen 会话是否存在
-if screen -list | grep -q "nexus"; then
-    print_success "节点已成功启动！"
+# 检查容器状态
+if docker ps --format '{{.Names}}' | grep -qw "nexus-prover"; then
+    print_success "🚀 Nexus 节点已成功启动！"
     echo ""
-    echo -e "${GREEN}🚀 节点信息:${NC}"
+    echo -e "${GREEN}📋 节点信息:${NC}"
     echo -e "   Node ID: ${YELLOW}$NODE_ID${NC}"
-    echo -e "   Screen 会话: ${YELLOW}nexus${NC}"
+    echo -e "   容器名称: ${YELLOW}nexus-prover${NC}"
+    echo -e "   状态: ${GREEN}运行中${NC}"
     echo ""
-    echo -e "${BLUE}📋 管理命令:${NC}"
-    echo -e "   查看运行状态: ${YELLOW}screen -r nexus${NC}"
-    echo -e "   退出但保持运行: ${YELLOW}Ctrl+A 然后按 D${NC}"
-    echo -e "   查看所有会话: ${YELLOW}screen -ls${NC}"
-    echo -e "   完全停止节点: ${YELLOW}screen -S nexus -X quit${NC}"
+    echo -e "${BLUE}📖 管理命令:${NC}"
+    echo -e "   查看实时日志: ${YELLOW}docker logs -f nexus-prover${NC}"
+    echo -e "   查看容器状态: ${YELLOW}docker ps${NC}"
+    echo -e "   重启容器: ${YELLOW}docker restart nexus-prover${NC}"
+    echo -e "   停止容器: ${YELLOW}docker stop nexus-prover${NC}"
+    echo -e "   删除容器: ${YELLOW}docker rm -f nexus-prover${NC}"
     echo ""
     echo -e "${GREEN}✨ 节点正在后台运行中，开始挖矿！${NC}"
+    echo ""
+    echo -e "${BLUE}💡 提示: 使用 ${YELLOW}docker logs -f nexus-prover${NC} ${BLUE}查看实时运行日志${NC}"
+    
+    # 显示最新日志
+    echo ""
+    echo -e "${BLUE}📄 最新日志预览:${NC}"
+    docker logs nexus-prover 2>/dev/null | tail -10 || echo "日志稍后显示..."
+    
 else
-    print_error "节点启动失败，请检查日志"
+    print_error "容器启动失败，请检查 Docker 日志: docker logs nexus-prover"
 fi
 
-# 清理临时文件
-rm -f /tmp/start_nexus.sh
-
 echo ""
-echo -e "${GREEN}安装和启动完成！${NC}"
+echo -e "${GREEN}🎉 安装和启动完成！${NC}"
