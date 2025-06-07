@@ -119,11 +119,20 @@ echo -e "${GREEN}     🎉 安装完成！🎉${NC}"
 echo -e "${GREEN}=================================${NC}"
 echo ""
 
-# 提示用户输入 Node ID
+# 提示用户输入 Node ID - 修复输入问题
 echo -e "${YELLOW}请访问 https://app.nexus.xyz 获取你的 Node ID${NC}"
 echo ""
+
+# 使用 /dev/tty 确保能正确读取用户输入
 while true; do
-    read -p "请输入你的 Node ID: " NODE_ID
+    if [ -t 0 ]; then
+        # 标准输入是终端
+        read -p "请输入你的 Node ID: " NODE_ID
+    else
+        # 标准输入不是终端（通过 curl | bash 运行）
+        echo -n "请输入你的 Node ID: "
+        read NODE_ID < /dev/tty
+    fi
     
     if [[ -z "$NODE_ID" ]]; then
         echo -e "${RED}Node ID 不能为空，请重新输入${NC}"
