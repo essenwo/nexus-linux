@@ -1,17 +1,7 @@
 #!/bin/bash
 
-# Nexus Network 快速安装脚本
-# 优化版本 - 大幅缩短安装时间
-
-set -e
-
-# 颜色定义
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-#!/bin/bash
-
-# Nexus Network 兼容版安装脚本
-# 不依赖BuildKit，确保在所有Docker版本上工作
+# Nexus Network 宿主机直接安装脚本
+# 避免Docker容器问题，直接在系统上安装
 
 set -e
 
@@ -26,90 +16,75 @@ NC='\033[0m'
 
 print_step() { echo -e "${BLUE}[步骤]${NC} $1"; }
 print_success() { echo -e "${GREEN}[成功]${NC} $1"; }
-print_error() { echo -e "${RED}[错误]${NC} $1"; }
+print_error() { echo -e "${RED}[错误]${NC} $1"; exit 1; }
 
 print_header() {
     echo
     echo -e "${CYAN}=================================${NC}"
-    echo -e "${PURPLE}  Nexus Network 兼容版安装器${NC}"
-    echo -e "${PURPLE}  适用于所有Docker版本${NC}"
+    echo -e "${PURPLE}  Nexus Network 宿主机安装${NC}"
+    echo -e "${PURPLE}  直接安装，避免容器问题${NC}"
     echo -e "${CYAN}=================================${NC}"
     echo
 }
 
-# 检查Docker
-check_docker() {
-    print_step "检查Docker环境..."
-    if ! command -v docker &> /dev/null; then
-        print_step "安装Docker..."
-        curl -fsSL https://get.docker.com | sh
-        systemctl start docker
-        systemctl enable docker
+# 检查系统
+check_system() {
+    print_step "检查系统环境..."
+    
+    # 检查Ubuntu版本
+    if ! grep -q "22.04\|24.04" /etc/os-release; then
+        print_error "仅支持Ubuntu 22.04或24.04"
     fi
-    print_success "Docker准备就绪"
+    
+    # 检查glibc版本
+    GLIBC_VERSION=$(ldd --version | head -n1 | grep -o '[0-9]\+\.[0-9]\+')
+    echo "检测到GLIBC版本: $GLIBC_VERSION"
+    
+    if [ "$GLIBC_VERSION" != "2.39" ] && [ "$GLIBC_VERSION" != "2.40" ]; then
+        print_error "需要GLIBC 2.39+，当前版本: $GLIBC_VERSION。请使用Docker方案。"
+    fi
+    
+    print_success "系统兼容性检查通过"
 }
 
-# 创建简化的Dockerfile
-create_simple_dockerfile() {
-    print_step "创建兼容镜像..."
-    
-cat > Dockerfile << 'EOF'
-FROM ubuntu:24.04
-
-ENV DEBIAN_FRONTEND=noninteractive
-
-# 更新包管理器并安装curl
-RUN apt-get update && apt-get install -y curl
+# 安装依赖
+install_deps() {
+    print_step "安装系统依赖..."
+    apt-get update
+    apt-get install -y curl build-essential cmake pkg-config libssl-dev screen
+    print_success "依赖安装完成"
+}
 
 # 安装Rust
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-
-# 设置环境变量
-ENV PATH="/root/.cargo/bin:${PATH}"
-
-# 添加RISC-V目标
-RUN /root/.cargo/bin/rustup target add riscv32i-unknown-none-elf
-
-# 安装Nexus CLI，自动接受条款
-RUN echo "y" | curl https://cli.nexus.xyz/ | sh
-
-# 设置Nexus路径
-ENV PATH="/root/.nexus/bin:/root/.cargo/bin:${PATH}"
-
-# 创建启动脚本
-RUN echo '#!/bin/bash\n\
-echo "🚀 启动Nexus节点"\n\
-echo "Node ID: $NODE_ID"\n\
-echo "时间: $(date)"\n\
-echo\n\
-if [ -z "$NODE_ID" ]; then\n\
-    echo "❌ 错误: NODE_ID未设置"\n\
-    exit 1\n\
-fi\n\
-echo "✅ 启动 nexus-network..."\n\
-exec nexus-network start --node-id "$NODE_ID"' > /start.sh && chmod +x /start.sh
-
-# 清理
-RUN apt-get clean && rm -rf /var/lib/apt/lists/*
-
-CMD ["/start.sh"]
-EOF
+install_rust() {
+    print_step "安装Rust..."
+    if command -v rustc &> /dev/null; then
+        print_success "Rust已安装: $(rustc --version)"
+        return
+    fi
+    
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    source ~/.cargo/env
+    rustup target add riscv32i-unknown-none-elf
+    print_success "Rust安装完成"
 }
 
-# 简单构建
-simple_build() {
-    print_step "构建镜像（传统方式，约3-5分钟）..."
-    create_simple_dockerfile
+# 安装Nexus CLI
+install_nexus() {
+    print_step "安装Nexus CLI..."
+    if command -v nexus-network &> /dev/null; then
+        print_success "Nexus CLI已安装: $(nexus-network --version)"
+        return
+    fi
     
-    # 禁用BuildKit，使用传统构建
-    export DOCKER_BUILDKIT=0
+    echo "y" | curl https://cli.nexus.xyz/ | sh
+    source ~/.profile
     
-    if docker build -t nexus-simple . --no-cache; then
-        print_success "镜像构建完成！"
-        rm -f Dockerfile
+    # 验证安装
+    if command -v nexus-network &> /dev/null; then
+        print_success "Nexus CLI安装成功: $(nexus-network --version)"
     else
-        print_error "构建失败"
-        exit 1
+        print_error "Nexus CLI安装失败"
     fi
 }
 
@@ -119,7 +94,7 @@ get_node_id() {
     echo -e "${YELLOW}请访问 https://app.nexus.xyz 获取 Node ID${NC}"
     echo
     while true; do
-        read -p "请输入Node ID: " NODE_ID < /dev/tty
+        read -p "请输入Node ID: " NODE_ID
         if [[ "$NODE_ID" =~ ^[0-9]+$ ]]; then
             break
         else
@@ -128,197 +103,84 @@ get_node_id() {
     done
 }
 
-# 启动节点
-start_node() {
-    print_step "启动Nexus节点..."
+# 创建服务脚本
+create_service() {
+    print_step "创建Nexus服务..."
     
-    # 清理所有旧容器
-    docker stop nexus-node nexus-prover nexus-debug 2>/dev/null || true
-    docker rm nexus-node nexus-prover nexus-debug 2>/dev/null || true
-    
-    # 启动新容器
-    CONTAINER_ID=$(docker run -d \
-        --name nexus-node \
-        --restart unless-stopped \
-        --network host \
-        -e NODE_ID="$NODE_ID" \
-        nexus-simple)
-    
-    if [ $? -eq 0 ]; then
-        print_success "🎉 节点启动成功！"
-        echo
-        echo -e "${CYAN}📋 节点信息:${NC}"
-        echo "  Node ID: $NODE_ID"
-        echo "  容器名: nexus-node"
-        echo "  容器ID: ${CONTAINER_ID:0:12}"
-        echo
-        echo -e "${CYAN}📖 管理命令:${NC}"
-        echo "  查看日志: docker logs -f nexus-node"
-        echo "  重启节点: docker restart nexus-node"
-        echo "  停止节点: docker stop nexus-node"
-        echo "  节点状态: docker ps | grep nexus-node"
-        echo
-        
-        # 等待容器启动
-        sleep 3
-        
-        echo -e "${CYAN}📄 启动日志:${NC}"
-        docker logs nexus-node
-        
-    else
-        print_error "容器启动失败"
-        exit 1
-    fi
-}
-
-# 主函数
-main() {
-    print_header
-    check_docker
-    simple_build
-    get_node_id
-    start_node
-    
-    echo
-    echo -e "${GREEN}✅ 安装完成！节点正在后台挖矿...${NC}"
-    echo -e "${YELLOW}💡 使用 'docker logs -f nexus-node' 查看实时日志${NC}"
-}
-
-main
-
-print_step() { echo -e "${BLUE}[步骤]${NC} $1"; }
-print_success() { echo -e "${GREEN}[成功]${NC} $1"; }
-print_error() { echo -e "${RED}[错误]${NC} $1"; }
-
-print_header() {
-    echo
-    echo -e "${CYAN}=================================${NC}"
-    echo -e "${PURPLE}  Nexus Network 快速安装器${NC}"
-    echo -e "${PURPLE}  优化版 - 2分钟完成安装${NC}"
-    echo -e "${CYAN}=================================${NC}"
-    echo
-}
-
-# 检查Docker
-check_docker() {
-    print_step "检查Docker环境..."
-    if ! command -v docker &> /dev/null; then
-        print_step "安装Docker..."
-        curl -fsSL https://get.docker.com | sh
-        systemctl start docker
-        systemctl enable docker
-    fi
-    print_success "Docker准备就绪"
-}
-
-# 创建轻量化Dockerfile
-create_fast_dockerfile() {
-    print_step "创建优化镜像..."
-    
-cat > Dockerfile << 'EOF'
-# 使用更小的基础镜像
-FROM ubuntu:24.04
-
-# 设置非交互模式
-ENV DEBIAN_FRONTEND=noninteractive
-
-# 一次性安装所有依赖（减少层数）
-RUN apt-get update && apt-get install -y curl && \
-    # 安装Rust（一步完成）
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && \
-    # 设置PATH
-    . /root/.cargo/env && \
-    # 添加RISC-V目标
-    rustup target add riscv32i-unknown-none-elf && \
-    # 安装Nexus CLI
-    curl https://cli.nexus.xyz/ | sh && \
-    # 清理缓存
-    apt-get clean && rm -rf /var/lib/apt/lists/*
-
-# 设置环境变量
-ENV PATH="/root/.nexus/bin:/root/.cargo/bin:${PATH}"
-
-# 创建启动脚本
-RUN echo '#!/bin/bash' > /start.sh && \
-    echo 'echo "🚀 启动Nexus节点 - Node ID: $NODE_ID"' >> /start.sh && \
-    echo 'exec nexus-network start --node-id "$NODE_ID"' >> /start.sh && \
-    chmod +x /start.sh
-
-CMD ["/start.sh"]
+    # 创建启动脚本
+    cat > /usr/local/bin/nexus-start.sh << EOF
+#!/bin/bash
+export PATH="/root/.nexus/bin:/root/.cargo/bin:\$PATH"
+cd /root
+echo "启动Nexus网络节点..."
+echo "Node ID: $NODE_ID"
+echo "时间: \$(date)"
+exec nexus-network start --node-id $NODE_ID
 EOF
+    chmod +x /usr/local/bin/nexus-start.sh
+    
+    # 创建systemd服务
+    cat > /etc/systemd/system/nexus.service << EOF
+[Unit]
+Description=Nexus Network Node
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root
+ExecStart=/usr/local/bin/nexus-start.sh
+Restart=always
+RestartSec=10
+Environment=PATH=/root/.nexus/bin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    
+    # 重载并启动服务
+    systemctl daemon-reload
+    systemctl enable nexus.service
+    systemctl start nexus.service
+    
+    print_success "Nexus服务已创建并启动"
 }
 
-# 快速构建
-fast_build() {
-    print_step "快速构建镜像（约2分钟）..."
-    create_fast_dockerfile
-    
-    # 使用BuildKit加速构建
-    export DOCKER_BUILDKIT=1
-    
-    if docker build -t nexus-fast . --progress=plain; then
-        print_success "镜像构建完成！"
-        rm -f Dockerfile
-    else
-        print_error "构建失败"
-        exit 1
-    fi
-}
-
-# 获取Node ID
-get_node_id() {
+# 显示状态
+show_status() {
     echo
-    echo -e "${YELLOW}请访问 https://app.nexus.xyz 获取 Node ID${NC}"
+    echo -e "${CYAN}📋 安装完成信息:${NC}"
+    echo "  Node ID: $NODE_ID"
+    echo "  服务名: nexus.service"
+    echo "  状态: $(systemctl is-active nexus.service)"
     echo
-    while true; do
-        read -p "请输入Node ID: " NODE_ID < /dev/tty
-        if [[ "$NODE_ID" =~ ^[0-9]+$ ]]; then
-            break
-        else
-            print_error "请输入有效数字"
-        fi
-    done
-}
-
-# 启动节点
-start_node() {
-    print_step "启动Nexus节点..."
-    
-    # 清理旧容器
-    docker stop nexus-node 2>/dev/null || true
-    docker rm nexus-node 2>/dev/null || true
-    
-    # 启动新容器
-    docker run -d \
-        --name nexus-node \
-        --restart unless-stopped \
-        --network host \
-        -e NODE_ID="$NODE_ID" \
-        nexus-fast
-    
-    print_success "🎉 节点启动成功！"
-    echo
-    echo -e "${CYAN}管理命令:${NC}"
-    echo "  查看日志: docker logs -f nexus-node"
-    echo "  重启节点: docker restart nexus-node"
-    echo "  停止节点: docker stop nexus-node"
+    echo -e "${CYAN}📖 管理命令:${NC}"
+    echo "  查看状态: systemctl status nexus"
+    echo "  查看日志: journalctl -u nexus -f"
+    echo "  重启服务: systemctl restart nexus"
+    echo "  停止服务: systemctl stop nexus"
+    echo "  启动服务: systemctl start nexus"
     echo
     
-    sleep 2
-    echo -e "${CYAN}📄 运行状态:${NC}"
-    docker logs nexus-node
+    sleep 3
+    echo -e "${CYAN}📄 运行日志:${NC}"
+    journalctl -u nexus --no-pager --lines=10
 }
 
 # 主函数
 main() {
     print_header
-    check_docker
-    fast_build
+    check_system
+    install_deps
+    install_rust
+    install_nexus
     get_node_id
-    start_node
+    create_service
+    show_status
     
     echo
-    echo -e "${GREEN}✅ 快速安装完成！节点正在后台挖矿...${NC}"
+    echo -e "${GREEN}🎉 安装完成！Nexus节点正在后台运行${NC}"
+    echo -e "${YELLOW}💡 使用 'journalctl -u nexus -f' 查看实时日志${NC}"
 }
 
 main
