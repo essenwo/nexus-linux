@@ -1,186 +1,284 @@
 #!/bin/bash
 
-# Nexus Network 宿主机直接安装脚本
-# 避免Docker容器问题，直接在系统上安装
+# Nexus Network 一键安装脚本 for Ubuntu 22.04
+# 作者: AI Assistant
+# 版本: 1.0
 
 set -e
+
+echo "=================================="
+echo "    Nexus Network 一键安装脚本    "
+echo "=================================="
+echo ""
 
 # 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-PURPLE='\033[0;35m'
-CYAN='\033[0;36m'
-NC='\033[0m'
+NC='\033[0m' # No Color
 
-print_step() { echo -e "${BLUE}[步骤]${NC} $1"; }
-print_success() { echo -e "${GREEN}[成功]${NC} $1"; }
-print_error() { echo -e "${RED}[错误]${NC} $1"; exit 1; }
-
-print_header() {
-    echo
-    echo -e "${CYAN}=================================${NC}"
-    echo -e "${PURPLE}  Nexus Network 宿主机安装${NC}"
-    echo -e "${PURPLE}  直接安装，避免容器问题${NC}"
-    echo -e "${CYAN}=================================${NC}"
-    echo
+print_status() {
+    echo -e "${GREEN}[INFO]${NC} $1"
 }
 
-# 检查系统
-check_system() {
-    print_step "检查系统环境..."
-    
-    # 检查Ubuntu版本
-    if ! grep -q "22.04\|24.04" /etc/os-release; then
-        print_error "仅支持Ubuntu 22.04或24.04"
-    fi
-    
-    # 检查glibc版本
-    GLIBC_VERSION=$(ldd --version | head -n1 | grep -o '[0-9]\+\.[0-9]\+')
-    echo "检测到GLIBC版本: $GLIBC_VERSION"
-    
-    if [ "$GLIBC_VERSION" != "2.39" ] && [ "$GLIBC_VERSION" != "2.40" ]; then
-        print_error "需要GLIBC 2.39+，当前版本: $GLIBC_VERSION。请使用Docker方案。"
-    fi
-    
-    print_success "系统兼容性检查通过"
+print_warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
 }
 
-# 安装依赖
-install_deps() {
-    print_step "安装系统依赖..."
-    apt-get update
-    apt-get install -y curl build-essential cmake pkg-config libssl-dev screen
-    print_success "依赖安装完成"
+print_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
 }
 
-# 安装Rust
-install_rust() {
-    print_step "安装Rust..."
-    if command -v rustc &> /dev/null; then
-        print_success "Rust已安装: $(rustc --version)"
-        return
-    fi
-    
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-    source ~/.cargo/env
-    rustup target add riscv32i-unknown-none-elf
-    print_success "Rust安装完成"
-}
+# 检查是否为root用户
+if [ "$EUID" -eq 0 ]; then
+    print_error "请不要使用root用户运行此脚本"
+    exit 1
+fi
 
-# 安装Nexus CLI
-install_nexus() {
-    print_step "安装Nexus CLI..."
-    if command -v nexus-network &> /dev/null; then
-        print_success "Nexus CLI已安装: $(nexus-network --version)"
-        return
-    fi
-    
-    echo "y" | curl https://cli.nexus.xyz/ | sh
-    source ~/.profile
-    
-    # 验证安装
-    if command -v nexus-network &> /dev/null; then
-        print_success "Nexus CLI安装成功: $(nexus-network --version)"
-    else
-        print_error "Nexus CLI安装失败"
-    fi
-}
+# 检查系统版本
+if ! grep -q "Ubuntu" /etc/os-release; then
+    print_warning "此脚本专为Ubuntu系统设计，其他系统可能存在兼容性问题"
+fi
+
+# 更新系统包（可选）
+read -p "是否更新系统包？(y/N): " update_system
+if [[ $update_system =~ ^[Yy]$ ]]; then
+    print_status "更新系统包..."
+    sudo apt update && sudo apt upgrade -y
+else
+    print_status "跳过系统更新"
+fi
+
+# 检查并安装Docker
+print_status "检查Docker安装状态..."
+if ! command -v docker &> /dev/null; then
+    print_status "Docker未安装，正在安装..."
+    curl -fsSL https://get.docker.com -o get-docker.sh
+    sudo sh get-docker.sh
+    sudo usermod -aG docker $USER
+    rm get-docker.sh
+    print_warning "Docker安装完成，需要重新登录以生效用户组权限"
+    print_warning "请退出当前会话，重新登录后再次运行此脚本"
+    exit 0
+else
+    print_status "Docker已安装"
+fi
+
+# 检查并安装Docker Compose
+print_status "检查Docker Compose安装状态..."
+if ! command -v docker-compose &> /dev/null; then
+    print_status "Docker Compose未安装，正在安装..."
+    sudo curl -L "https://github.com/docker/compose/releases/download/v2.24.1/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+    sudo chmod +x /usr/local/bin/docker-compose
+    print_status "Docker Compose安装完成"
+else
+    print_status "Docker Compose已安装"
+fi
+
+# 创建工作目录
+WORK_DIR="nexus-network-docker"
+print_status "创建工作目录: $WORK_DIR"
+mkdir -p $WORK_DIR
+cd $WORK_DIR
+
+# 创建Dockerfile
+print_status "创建Dockerfile..."
+cat > Dockerfile.nexus << 'EOF'
+FROM ubuntu:22.04
+
+# 设置非交互模式，避免安装过程中的提示
+ENV DEBIAN_FRONTEND=noninteractive
+ENV RUST_VERSION=stable
+
+# 安装必要依赖
+RUN apt update && apt install -y \
+    curl \
+    wget \
+    git \
+    build-essential \
+    cmake \
+    pkg-config \
+    libssl-dev \
+    protobuf-compiler \
+    libprotobuf-dev \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# 创建工作用户
+RUN useradd -m -s /bin/bash nexus
+USER nexus
+WORKDIR /home/nexus
+
+# 安装 Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/home/nexus/.cargo/bin:${PATH}"
+
+# 添加 RISC-V 目标
+RUN /home/nexus/.cargo/bin/rustup target add riscv32i-unknown-none-elf
+
+# 安装 Nexus CLI
+RUN curl https://cli.nexus.xyz/ | sh
+
+# 添加 Nexus CLI 到 PATH
+ENV PATH="/home/nexus/.nexus:${PATH}"
+
+# 设置启动脚本
+COPY --chown=nexus:nexus start_nexus.sh /home/nexus/
+RUN chmod +x /home/nexus/start_nexus.sh
+
+# 暴露可能需要的端口
+EXPOSE 8080
+
+CMD ["/home/nexus/start_nexus.sh"]
+EOF
+
+# 创建启动脚本
+print_status "创建启动脚本..."
+cat > start_nexus.sh << 'EOF'
+#!/bin/bash
+
+# Nexus Network 启动脚本
+
+echo "开始启动 Nexus Network..."
+
+# 检查 NODE_ID 环境变量
+if [ -z "$NODE_ID" ]; then
+    echo "错误: 请设置 NODE_ID 环境变量"
+    echo "使用方法: docker run -e NODE_ID=你的ID ..."
+    exit 1
+fi
+
+echo "使用Node ID: $NODE_ID"
+
+# 启动Nexus Network
+exec nexus-network start --node-id "$NODE_ID"
+EOF
+
+# 创建docker-compose.yml
+print_status "创建Docker Compose配置..."
+cat > docker-compose.yml << 'EOF'
+version: '3.8'
+
+services:
+  nexus-network:
+    build:
+      context: .
+      dockerfile: Dockerfile.nexus
+    container_name: nexus-node
+    restart: unless-stopped
+    environment:
+      - NODE_ID=${NODE_ID}
+    ports:
+      - "8080:8080"
+    volumes:
+      - nexus_data:/home/nexus/.nexus_data
+    networks:
+      - nexus_network
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+
+volumes:
+  nexus_data:
+    driver: local
+
+networks:
+  nexus_network:
+    driver: bridge
+EOF
+
+# 创建管理脚本
+print_status "创建管理脚本..."
+cat > manage.sh << 'EOF'
+#!/bin/bash
+
+case "$1" in
+    start)
+        echo "启动Nexus Network..."
+        docker-compose up -d
+        ;;
+    stop)
+        echo "停止Nexus Network..."
+        docker-compose down
+        ;;
+    restart)
+        echo "重启Nexus Network..."
+        docker-compose restart
+        ;;
+    logs)
+        echo "查看日志..."
+        docker-compose logs -f
+        ;;
+    status)
+        echo "查看状态..."
+        docker-compose ps
+        ;;
+    shell)
+        echo "进入容器..."
+        docker exec -it nexus-node bash
+        ;;
+    *)
+        echo "用法: $0 {start|stop|restart|logs|status|shell}"
+        echo ""
+        echo "  start   - 启动服务"
+        echo "  stop    - 停止服务"
+        echo "  restart - 重启服务"
+        echo "  logs    - 查看实时日志"
+        echo "  status  - 查看运行状态"
+        echo "  shell   - 进入容器调试"
+        exit 1
+        ;;
+esac
+EOF
+
+chmod +x manage.sh
 
 # 获取Node ID
-get_node_id() {
-    echo
-    echo -e "${YELLOW}请访问 https://app.nexus.xyz 获取 Node ID${NC}"
-    echo
-    while true; do
-        read -p "请输入Node ID: " NODE_ID
-        if [[ "$NODE_ID" =~ ^[0-9]+$ ]]; then
-            break
-        else
-            print_error "请输入有效数字"
-        fi
-    done
-}
+echo ""
+while true; do
+    read -p "请输入您的Node ID: " NODE_ID
+    if [ -n "$NODE_ID" ]; then
+        break
+    else
+        print_error "Node ID不能为空，请重新输入"
+    fi
+done
 
-# 创建服务脚本
-create_service() {
-    print_step "创建Nexus服务..."
-    
-    # 创建启动脚本
-    cat > /usr/local/bin/nexus-start.sh << EOF
-#!/bin/bash
-export PATH="/root/.nexus/bin:/root/.cargo/bin:\$PATH"
-cd /root
-echo "启动Nexus网络节点..."
-echo "Node ID: $NODE_ID"
-echo "时间: \$(date)"
-exec nexus-network start --node-id $NODE_ID
-EOF
-    chmod +x /usr/local/bin/nexus-start.sh
-    
-    # 创建systemd服务
-    cat > /etc/systemd/system/nexus.service << EOF
-[Unit]
-Description=Nexus Network Node
-After=network.target
+# 创建.env文件
+echo "NODE_ID=$NODE_ID" > .env
 
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/root
-ExecStart=/usr/local/bin/nexus-start.sh
-Restart=always
-RestartSec=10
-Environment=PATH=/root/.nexus/bin:/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# 构建Docker镜像
+print_status "构建Docker镜像..."
+docker-compose build
 
-[Install]
-WantedBy=multi-user.target
-EOF
-    
-    # 重载并启动服务
-    systemctl daemon-reload
-    systemctl enable nexus.service
-    systemctl start nexus.service
-    
-    print_success "Nexus服务已创建并启动"
-}
+# 启动容器
+print_status "启动容器..."
+docker-compose up -d
 
-# 显示状态
-show_status() {
-    echo
-    echo -e "${CYAN}📋 安装完成信息:${NC}"
-    echo "  Node ID: $NODE_ID"
-    echo "  服务名: nexus.service"
-    echo "  状态: $(systemctl is-active nexus.service)"
-    echo
-    echo -e "${CYAN}📖 管理命令:${NC}"
-    echo "  查看状态: systemctl status nexus"
-    echo "  查看日志: journalctl -u nexus -f"
-    echo "  重启服务: systemctl restart nexus"
-    echo "  停止服务: systemctl stop nexus"
-    echo "  启动服务: systemctl start nexus"
-    echo
-    
-    sleep 3
-    echo -e "${CYAN}📄 运行日志:${NC}"
-    journalctl -u nexus --no-pager --lines=10
-}
-
-# 主函数
-main() {
-    print_header
-    check_system
-    install_deps
-    install_rust
-    install_nexus
-    get_node_id
-    create_service
-    show_status
-    
-    echo
-    echo -e "${GREEN}🎉 安装完成！Nexus节点正在后台运行${NC}"
-    echo -e "${YELLOW}💡 使用 'journalctl -u nexus -f' 查看实时日志${NC}"
-}
-
-main
+echo ""
+echo "=================================="
+echo -e "${GREEN}✅ 安装完成！${NC}"
+echo "=================================="
+echo ""
+echo -e "${BLUE}管理命令:${NC}"
+echo "  ./manage.sh start    - 启动服务"
+echo "  ./manage.sh stop     - 停止服务"
+echo "  ./manage.sh restart  - 重启服务"
+echo "  ./manage.sh logs     - 查看实时日志"
+echo "  ./manage.sh status   - 查看运行状态"
+echo "  ./manage.sh shell    - 进入容器调试"
+echo ""
+echo -e "${BLUE}状态信息:${NC}"
+echo "  工作目录: $(pwd)"
+echo "  Node ID: $NODE_ID"
+echo "  容器名称: nexus-node"
+echo ""
+echo -e "${GREEN}✅ 容器已在后台运行，SSH断开不会影响服务${NC}"
+echo ""
+echo "查看实时日志: ./manage.sh logs"
